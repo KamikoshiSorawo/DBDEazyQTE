@@ -1,0 +1,175 @@
+import keyboard
+import pyautogui
+import time
+import win32gui,win32ui,win32con
+import threading
+import numpy as np
+from PIL import Image
+import winsound
+import math
+
+
+imgdir='DBDimg/'
+delay_degree = 0
+crop_w, crop_h = 200, 200
+last_im_a=0
+region=[int((2560-crop_w)/2), int((1440-crop_h)/2),
+                  crop_w, crop_h]
+toggle=True
+keyboard_switch=True
+frame_rate=60
+repair_speed=330
+heal_speed=300
+wiggle_speed=230
+shot_delay= 0.006574
+press_and_release_delay= 0.003206
+color_sensitive=125
+delay_pixel=0
+speed_now = repair_speed
+hyperfocus=False
+red_sensitive=180
+focus_level=0
+
+
+def sleep(t):
+    st = time.time()
+    while True:
+        offset = time.time() - st
+        if offset >= t:
+            # print(offset)
+            break
+
+def sleep_to(time_stamp):
+    while True:
+        offset = time.time() - time_stamp
+        if offset >= 0:
+            # print(offset)
+            break
+
+def win_screenshot(startw,starth,w,h):
+    # bmpfilenamename = "out.bmp" #set this
+
+    hwnd = 0 # window ID, 0 represents current active window
+    # hwnd = win32gui.FindWindow(None, windowname)
+    wDC = win32gui.GetWindowDC(hwnd)
+    dcObj=win32ui.CreateDCFromHandle(wDC)
+    cDC=dcObj.CreateCompatibleDC()
+    dataBitMap = win32ui.CreateBitmap()
+    dataBitMap.CreateCompatibleBitmap(dcObj, w, h)
+    cDC.SelectObject(dataBitMap)
+    cDC.BitBlt((0,0),(w, h) , dcObj, (startw,starth), win32con.SRCCOPY)
+    # dataBitMap.SaveBitmapFile(cDC, bmpfilenamename)
+    signedIntsArray = dataBitMap.GetBitmapBits(True)
+    img_array = np.frombuffer(signedIntsArray, dtype='uint8')
+    # Free Resources
+    dcObj.DeleteDC()
+    cDC.DeleteDC()
+    win32gui.ReleaseDC(hwnd, wDC)
+    win32gui.DeleteObject(dataBitMap.GetHandle())
+    img_array.shape = (h,w,4)
+    img_array=np.delete(img_array,3,2)[...,::-1]
+    # Image.fromarray(img_array).show()
+    return img_array
+
+
+
+def find_red(im_array):
+    r_i ,r_j= None,None
+    shape = im_array.shape
+
+    target_points=[]
+    for i in range(shape[0]):
+        for j in range(shape[1]):
+            if im_array[i][j][0] > red_sensitive and im_array[i][j][1] < 20 and im_array[i][j][2] < 20:
+                l1,l2=i-shape[0]/2,j-shape[1]/2
+                if l1*l1+l2*l2 > shape[0]*shape[0]/4:
+                    # print('not in circle:',i,j)
+                    continue
+                im_array[i][j]=[255,0,0]
+                target_points.append((i,j))
+    if not target_points:
+        return
+    # print(target_points)
+    r_i,r_j,max_d= find_thickest_point(shape,target_points)
+    if max_d < 1:
+        return
+    # print("red:",r_i, r_j)
+    if not r_i or not r_j:
+        return
+
+    return (r_i, r_j,max_d)
+
+
+# def find_thickest_point(im_array,r_i,r_j,target_points):
+#     from line_profiler import LineProfiler
+#     lp = LineProfiler()
+#     lp_wrapper = lp(find_thickest_point_pre)
+#     result=lp_wrapper(im_array,r_i,r_j,target_points)
+#     lp.print_stats()
+#     return result
+
+def find_thickest_point(shape,target_points):
+    # print(shape)
+    target_map = np.zeros((shape[0], shape[1]), dtype=bool)
+    for i,j in target_points:
+        target_map[i][j]=True
+    max_r=target_points[0]
+    max_d=0
+
+    for i,j in target_points:
+        for d in range(1,20):
+            if i+d >=shape[0] or j+d >= shape[1] or j-d <0 or i-d < 0:
+                break
+            elif target_map[i+d][j+d] and target_map[i-d][j-d] and target_map[i-d][j+d] and target_map[i+d][j-d]:
+                if d>max_d:
+                    max_d=d
+                    max_r=[i,j]
+                    # print(max_r,max_d,im_array[i+d][j+d],im_array[i-d][j+d],im_array[i+d][j-d],im_array[i-d][j-d])
+            else:
+                break
+    r_i,r_j = max_r[0],max_r[1]
+    return (r_i,r_j,max_d)
+
+
+def find_square(im_array):
+
+    r_i = None
+    shape = im_array.shape
+    target_points=[]
+    global focus_level
+    for i in range(shape[0]):
+        for j in range(shape[1]):
+            if list(im_array[i][j]) == [255, 255, 255]:
+                if i > shape[0]*(200-40)/2/200 and i < shape[0]*(200+40)/2/200 and j > shape[1]*(200-140)/2/200 and j < shape[1]*(200+140)/2/200:
+                    im_array[i][j]=[0, 0, 0]
+                    continue
+                target_points.append((i,j))
+                im_array[i][j]=[0, 0, 255]
+
+    if not target_points:
+        return
+
+    r_i,r_j,max_d= find_thickest_point(shape,target_points)
+
+    # print("white square:",r_i, r_j)
+    if not r_i or not r_j:
+        return
+    # if max_d < 1:
+    #     return 
+    pre_d=0
+    post_d=0
+    target = cal_degree(r_i-crop_h/2, r_j-crop_w/2)
+    sin=math.sin(2*math.pi*target/360)
+    cos=math.cos(2*math.pi*target/360)
+    for i in range(max_d,21):
+        pre_i=round(r_i-sin*i)
+        pre_j=round(r_j-cos*i)
+        if list(im_array[pre_i][pre_j]) ==[0, 0, 255]:
+            pre_d=i
+        else:
+            break
+    for i in range(max_d,21):
+        pre_i=round(r_i+sin*i)
+        pre_j=round(r_j+cos*i)
+        if list(im_array[pre_i][pre_j]) ==[0, 0, 255]:
+        
